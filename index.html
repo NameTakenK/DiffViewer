@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Improved Diff Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', sans-serif;
+      background: #f0f4f8;
+    }
+
+    .sticky-header {
+      position: sticky;
+      top: 0;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      padding: 16px;
+      z-index: 999;
+      text-align: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    }
+
+    .sticky-header h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .nav-buttons {
+      margin-top: 10px;
+    }
+
+    .nav-buttons button {
+      background: #6366f1;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      margin: 0 6px;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .nav-buttons button:hover {
+      background: #4338ca;
+    }
+
+    .summary {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #4b5563;
+    }
+
+    .options {
+      margin-top: 8px;
+    }
+
+    .vertical-split {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 220px);
+    }
+
+    .input-area {
+      display: flex;
+      flex: 1;
+      min-height: 150px;
+    }
+
+    .input-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border: 2px dashed transparent;
+    }
+
+    .input-panel.drag-over {
+      border-color: #60a5fa;
+      background-color: #eff6ff;
+    }
+
+    .input-panel.left textarea {
+      background: #fffbe6;
+    }
+
+    .input-panel.right textarea {
+      background: #e0f2fe;
+    }
+
+    .input-panel label {
+      padding: 4px 8px;
+      font-weight: bold;
+    }
+
+    .input-panel.left label {
+      background: #fef3c7;
+    }
+
+    .input-panel.right label {
+      background: #dbeafe;
+    }
+
+    textarea {
+      flex: 1;
+      font-family: monospace;
+      font-size: 14px;
+      padding: 10px;
+      border: none;
+      resize: none;
+      outline: none;
+    }
+
+    .resizable-container {
+      display: flex;
+      flex: 1;
+    }
+
+    .panel {
+      flex: 1;
+      overflow-y: auto;
+      background: #ffffff;
+      font-family: monospace;
+      border-right: 1px solid #e5e7eb;
+    }
+
+    .panel:last-child {
+      border-right: none;
+    }
+
+    .line {
+      padding: 4px 10px;
+      border-bottom: 1px solid #eee;
+      white-space: pre-wrap;
+      font-size: 14px;
+    }
+
+    .added {
+      background-color: #d1fae5;
+    }
+
+    .removed {
+      background-color: #fee2e2;
+    }
+
+    .highlight-block {
+      outline: 2px solid #fbbf24;
+      z-index: 1;
+      position: relative;
+    }
+
+    .resizer {
+      width: 6px;
+      cursor: col-resize;
+      background: #cbd5e1;
+    }
+
+    .resizer-horizontal {
+      height: 6px;
+      cursor: row-resize;
+      background: #cbd5e1;
+    }
+  </style>
+</head>
+<body>
+  <div class="sticky-header">
+    <h2>📘 Improved Diff Viewer</h2>
+    <div class="nav-buttons">
+      <button onclick="prevBlock()">⬆ Prev (F3)</button>
+      <button onclick="nextBlock()">⬇ Next (F4)</button>
+    </div>
+    <div class="options">
+      <label><input type="checkbox" id="ignoreWhitespace" /> 공백 및 탭 무시</label>
+    </div>
+    <div id="summary" class="summary">No difference yet.</div>
+  </div>
+
+  <div class="vertical-split">
+    <div class="input-area">
+      <div class="input-panel left" id="leftPanel">
+        <label>⬅ Left (Original)</label>
+        <textarea id="textA" placeholder="왼쪽 원본 텍스트 입력 (파일 드래그 앤 드롭 가능)"></textarea>
+      </div>
+      <div class="resizer" id="inputResizer"></div>
+      <div class="input-panel right" id="rightPanel">
+        <label>Right (Modified) ➡</label>
+        <textarea id="textB" placeholder="오른쪽 수정 텍스트 입력 (파일 드래그 앤 드롭 가능)"></textarea>
+      </div>
+    </div>
+    <div class="resizer-horizontal" id="middleResizer"></div>
+    <div class="resizable-container">
+      <div id="outputA" class="panel"></div>
+      <div class="resizer" id="resizer"></div>
+      <div id="outputB" class="panel"></div>
+    </div>
+  </div>
+
+  <script>
+    const textA = document.getElementById("textA");
+    const textB = document.getElementById("textB");
+    const outputA = document.getElementById("outputA");
+    const outputB = document.getElementById("outputB");
+    const ignoreWhitespace = document.getElementById("ignoreWhitespace");
+    const summary = document.getElementById("summary");
+
+    let blocks = [], currentBlockIndex = -1;
+
+    function createLine(text = "", className = "") {
+      const line = document.createElement("div");
+      line.className = `line ${className}`;
+      line.innerText = text || "\u00A0";
+      return line;
+    }
+
+    function clearHighlights() {
+      blocks.forEach(block => {
+        block.left.forEach(el => el.classList.remove("highlight-block"));
+        block.right.forEach(el => el.classList.remove("highlight-block"));
+      });
+    }
+
+    function highlightCurrentBlock() {
+      clearHighlights();
+      if (blocks[currentBlockIndex]) {
+        const { left, right } = blocks[currentBlockIndex];
+        left.forEach(el => el.classList.add("highlight-block"));
+        right.forEach(el => el.classList.add("highlight-block"));
+        if (left[0]) left[0].scrollIntoView({ block: "center", behavior: "smooth" });
+        if (right[0]) right[0].scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    }
+
+    function nextBlock() {
+      if (!blocks.length) return;
+      currentBlockIndex = (currentBlockIndex + 1) % blocks.length;
+      highlightCurrentBlock();
+    }
+
+    function prevBlock() {
+      if (!blocks.length) return;
+      currentBlockIndex = (currentBlockIndex - 1 + blocks.length) % blocks.length;
+      highlightCurrentBlock();
+    }
+
+    function updateDiff() {
+      const a = ignoreWhitespace.checked ? textA.value.replace(/[ \t]/g, '') : textA.value;
+      const b = ignoreWhitespace.checked ? textB.value.replace(/[ \t]/g, '') : textB.value;
+      const diffs = Diff.diffLines(a, b);
+      outputA.innerHTML = outputB.innerHTML = "";
+      blocks = []; currentBlockIndex = -1;
+      let block = null;
+      diffs.forEach(part => {
+        const lines = part.value.split("\n"); lines.pop();
+        lines.forEach(line => {
+          const left = part.removed ? createLine(line, "removed") : createLine();
+          const right = part.added ? createLine(line, "added") : createLine();
+          if (part.added) {
+            outputA.appendChild(createLine());
+            outputB.appendChild(right);
+          } else if (part.removed) {
+            outputA.appendChild(left);
+            outputB.appendChild(createLine());
+          } else {
+            outputA.appendChild(createLine(line));
+            outputB.appendChild(createLine(line));
+          }
+          if (part.added || part.removed) {
+            if (!block) block = { left: [], right: [] };
+            if (part.added) block.right.push(right);
+            if (part.removed) block.left.push(left);
+          } else if (block) { blocks.push(block); block = null; }
+        });
+      });
+      if (block) blocks.push(block);
+      summary.textContent = `➕ ${diffs.filter(d => d.added).length} additions, ➖ ${diffs.filter(d => d.removed).length} deletions`;
+    }
+
+    textA.addEventListener("input", updateDiff);
+    textB.addEventListener("input", updateDiff);
+    ignoreWhitespace.addEventListener("change", updateDiff);
+
+    window.addEventListener("keydown", e => {
+      if (e.code === "F3") { e.preventDefault(); prevBlock(); }
+      else if (e.code === "F4") { e.preventDefault(); nextBlock(); }
+    });
+
+    function addResizer(resizer, prev, next, vertical = false) {
+      let start, startPrev, startNext;
+      resizer.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        start = vertical ? e.clientY : e.clientX;
+        startPrev = vertical ? prev.offsetHeight : prev.offsetWidth;
+        startNext = vertical ? next.offsetHeight : next.offsetWidth;
+        document.addEventListener('mousemove', resize);
+        document.addEventListener('mouseup', stop);
+      });
+      function resize(e) {
+        const delta = (vertical ? e.clientY : e.clientX) - start;
+        const total = startPrev + startNext;
+        const percent = (startPrev + delta) / total;
+        prev.style.flex = percent;
+        next.style.flex = 1 - percent;
+      }
+      function stop() {
+        document.removeEventListener('mousemove', resize);
+        document.removeEventListener('mouseup', stop);
+      }
+    }
+    addResizer(document.getElementById('resizer'), outputA, outputB);
+    addResizer(document.getElementById('inputResizer'), document.querySelector('.input-panel.left'), document.querySelector('.input-panel.right'));
+    addResizer(document.getElementById('middleResizer'), document.querySelector('.input-area'), document.querySelector('.resizable-container'), true);
+
+    // drag-and-drop for both textareas
+    function setupDragAndDrop(panelId, textareaId) {
+      const panel = document.getElementById(panelId);
+      const textarea = document.getElementById(textareaId);
+      panel.addEventListener("dragover", e => {
+        e.preventDefault();
+        panel.classList.add("drag-over");
+      });
+      panel.addEventListener("dragleave", () => panel.classList.remove("drag-over"));
+      panel.addEventListener("drop", e => {
+        e.preventDefault();
+        panel.classList.remove("drag-over");
+        const file = e.dataTransfer.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = function(evt) {
+            textarea.value = evt.target.result;
+            updateDiff();
+          };
+          reader.readAsText(file);
+        }
+      });
+    }
+
+    setupDragAndDrop("leftPanel", "textA");
+    setupDragAndDrop("rightPanel", "textB");
+
+    updateDiff();
+  </script>
+</body>
+</html>
